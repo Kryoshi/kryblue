@@ -74,14 +74,14 @@ bash repo_files/setup.sh status
 Update the installed image:
 
 ```bash
-sudo bootc upgrade
+sudo rpm-ostree upgrade
 sudo reboot
 ```
 
 Check the current deployment:
 
 ```bash
-bootc status
+rpm-ostree status
 ```
 
 The image uses the `latest` tag, while the Fedora major version is controlled by the `Containerfile`.
