@@ -28,26 +28,16 @@ Keep the drives as separate filesystems. Back up important files before changing
 Once the image has been successfully built and published to GHCR, run:
 
 ```bash
-sudo bootc switch ghcr.io/kryoshi/kryblue:latest
+sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/kryoshi/kryblue:latest
 sudo reboot
 ```
 
-Verify the installation:
+Optionally switch to signature verified updates:
 
-```bash
-bootc status
 ```
-
-If `bootc` is unavailable on the initial Fedora installation, first rebase to the unsigned Universal Blue base:
-
-```bash
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/ublue-os/silverblue-main:44
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/kryoshi/kryblue:latest
 sudo reboot
 ```
-
-Then switch to Kryblue using `bootc switch` as shown above.
-
-**Note:** The initial `bootc switch` does not enforce Cosign signature verification by default. Enforcing signatures requires a trusted public key and container signature policy configured for the custom image.
 
 ### 3. Post-installation
 
