@@ -82,6 +82,34 @@ dnf5 -y copr enable atim/starship
 dnf5 install -y starship
 dnf5 -y copr disable atim/starship
 
+
+# ============================================================
+# Remove unwanted base applications
+# ============================================================
+
+unwanted_packages=(
+  firefox
+  firefox-langpacks
+  gnome-tour
+  gnome-contacts
+  malcontent-control
+  yelp
+  gnome-characters
+)
+
+# Only remove packages that are actually installed
+installed_packages=()
+
+for package in "${unwanted_packages[@]}"; do
+  if rpm -q "$package" &>/dev/null; then
+    installed_packages+=("$package")
+  fi
+done
+
+if ((${#installed_packages[@]})); then
+  dnf5 remove -y "${installed_packages[@]}"
+fi
+
 # ============================================================
 # Services
 # ============================================================
