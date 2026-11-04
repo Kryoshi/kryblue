@@ -12,7 +12,7 @@ Download and install the official [Fedora Silverblue ISO](https://fedoraproject.
 
 Prefer the same Fedora major version as the image's `Containerfile` (currently Fedora 44).
 
-Recommended storage layout:
+Intended storage layout:
 
 | Drive      | Purpose                                          | Mount point |
 | ---------- | ------------------------------------------------ | ----------- |
@@ -21,7 +21,7 @@ Recommended storage layout:
 
 On Fedora Atomic, `/home` is a symlink to `/var/home`.
 
-Keep the drives as separate filesystems. **Do not format the 2 TB drive if it already contains data.** Back up important files before changing partitions.
+Keep the drives as separate filesystems. Back up important files before changing partitions.
 
 ### 2. Switch to Kryblue
 
