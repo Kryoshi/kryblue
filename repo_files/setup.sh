@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Kryblue / Kryzite: repeatable user setup after an Atomic OS installation.
+# Usage: ./postinstall.sh [all|git|docker|starship|ptyxis|flatpaks|status]
+# Run as your normal desktop user, not with sudo.
+set -Eeuo pipefail
+
+GIT_NAME="${KRY_GIT_NAME:-Kryoshi}"
+GIT_EMAIL="${KRY_GIT_EMAIL:-63922550+Kryoshi@users.noreply.github.com}"
+FLATPAKS_URL="${KRY_FLATPAKS_URL:-https://raw.githubusercontent.com/Kryoshi/kryzite-os/main/repo_files/flatpaks}"
+MANIFEST_TEMP=""
+cleanup() { if [[ -n "$MANIFEST_TEMP" ]]; then rm -f "$MANIFEST_TEMP"; fi; }
+trap cleanup EXIT
+
+log() { printf '\n==> %s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { printf 'Required command not found: %s\n' "$1" >&2; return 1; }; }
+
+setup_git() {
+  log 'Git identity and GitHub authentication'
+  need git
+  need gh
+
+  # Git commit author != GitHub authentication. Both are configured here.
+  git config --global user.name "$GIT_NAME"
+  git config --global user.email "$GIT_EMAIL"
+  git config --global init.defaultBranch main
+  git config --global pull.rebase false
+  if command -v code >/dev/null 2>&1; then
+    git config --global core.editor 'code --wait'
+  fi
+
+  # GitHub CLI supplies HTTPS credentials; no SSH key or saved PAT required.
+  gh config set git_protocol https --host github.com
+  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    if [[ ! -t 0 ]]; then
+      warn 'Git identity is set, but interactive GitHub login is required.'
+      warn 'Run: gh auth login --hostname github.com --git-protocol https --web'
+      return 1
+    fi
+    gh auth login --hostname github.com --git-protocol https --web
+  fi
+  gh auth setup-git --hostname github.com
+  log "Git configured for $GIT_NAME <$GIT_EMAIL>"
+}
+
+setup_docker() {
+  log 'Docker Engine'
+  need docker
+  need sudo
+  sudo groupadd --force docker
+  if ! id -nG "$(id -un)" | tr ' ' '\n' | grep -Fxq docker; then
+    sudo usermod -aG docker "$(id -un)"
+    warn 'Docker group added. Log out and back in for group membership to take effect.'
+  fi
+  sudo systemctl enable --now docker.service
+}
+
+setup_starship() {
+  log 'Starship prompt'
+  need starship
+  mkdir -p "$HOME/.config"
+  if [[ ! -e "$HOME/.config/starship.toml" ]]; then
+    starship preset tokyo-night -o "$HOME/.config/starship.toml"
+  else
+    log 'Existing starship.toml preserved'
+  fi
+
+  touch "$HOME/.bashrc"
+  if ! grep -Fq '# >>> Kryblue Starship >>>' "$HOME/.bashrc" && \
+     ! grep -Fq 'starship init bash' "$HOME/.bashrc"; then
+    cat >> "$HOME/.bashrc" <<'BASHRC'
+
+# >>> Kryblue Starship >>>
+if [[ $- == *i* ]] && command -v starship >/dev/null 2>&1; then
+  eval "$(starship init bash)"
+fi
+# <<< Kryblue Starship <<<
+BASHRC
+  fi
+}
+
+setup_ptyxis() {
+  log 'Ptyxis opacity (GNOME only)'
+  if ! command -v gsettings >/dev/null 2>&1 || \
+     ! gsettings list-schemas | grep -Fxq org.gnome.Ptyxis; then
+    log 'Ptyxis settings are not available; skipped'
+    return
+  fi
+  local profile
+  profile="$(gsettings get org.gnome.Ptyxis default-profile-uuid | tr -d "'\n")"
+  if [[ -z "$profile" ]]; then
+    log 'No Ptyxis default profile yet; skipped'
+    return
+  fi
+  gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
+}
+
+# Migrate Fedora-origin apps when Flathub carries the same app. Never
+# uninstall apps or forcibly delete a remote with still-installed refs.
+migrate_fedora_remote() {
+  local scope="$1" app origin remaining
+  if ! flatpak "--$scope" remotes --columns=name | grep -Fxq fedora; then
+    return 0
+  fi
+
+  while IFS=$'\t' read -r app origin; do
+    [[ "$origin" == fedora ]] || continue
+    if flatpak "--$scope" remote-info flathub "$app" >/dev/null 2>&1; then
+      log "Switching $scope app $app to Flathub"
+      if ! flatpak "--$scope" install --reinstall --noninteractive -y flathub "$app"; then
+        warn "Couldn't migrate $app automatically; leaving it installed"
+      fi
+    else
+      warn "No matching Flathub application for $scope app $app"
+    fi
+  done < <(flatpak "--$scope" list --app --columns=application,origin)
+
+  flatpak "--$scope" uninstall --unused --noninteractive -y || true
+
+  # Include runtimes and extensions: removing a remote in use strands updates.
+  remaining="$(flatpak "--$scope" list --all --columns=application,origin | awk -F '\t' '$2 == "fedora" {print $1}')"
+  if [[ -n "$remaining" ]]; then
+    warn "Fedora $scope remote still has installed refs and was NOT deleted:"
+    printf '%s\n' "$remaining" >&2
+    warn 'Review these refs, then rerun: ./postinstall.sh flatpaks'
+    return 0
+  fi
+  flatpak "--$scope" remote-delete fedora
+  log "Removed $scope Fedora Flatpak remote"
+}
+
+setup_flatpaks() {
+  log 'Flathub applications from shared GitHub manifest'
+  need flatpak
+  need curl
+  flatpak --system remote-add --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo
+  flatpak --system remote-modify --enable --no-filter --subset= flathub
+  if flatpak --user remotes --columns=name | grep -Fxq flathub; then
+    flatpak --user remote-modify --enable --no-filter --subset= flathub
+  fi
+
+  local manifest app
+  manifest="$(mktemp)"
+  MANIFEST_TEMP="$manifest"
+  curl --fail --silent --show-error --location --retry 3 \
+    "$FLATPAKS_URL" --output "$manifest"
+  [[ -s "$manifest" ]] || { warn 'Flatpak manifest is empty'; return 1; }
+
+  while IFS= read -r app || [[ -n "$app" ]]; do
+    app="${app%%#*}"
+    app="${app#"${app%%[![:space:]]*}"}"
+    app="${app%"${app##*[![:space:]]}"}"
+    [[ -z "$app" ]] && continue
+    if [[ ! "$app" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]+$ ]]; then
+      warn "Invalid Flatpak ID in manifest: $app"
+      return 1
+    fi
+    flatpak --system install --noninteractive -y flathub "$app"
+  done < "$manifest"
+
+  migrate_fedora_remote system
+  migrate_fedora_remote user
+  log 'Flatpak sync complete; no unrelated apps were removed'
+}
+
+show_status() {
+  log 'Git author'
+  git config --global --get user.name || true
+  git config --global --get user.email || true
+  log 'GitHub authentication'
+  gh auth status --hostname github.com || true
+  log 'Flatpak remotes'
+  flatpak remotes || true
+  log 'Docker group (may require re-login)'
+  id -nG || true
+}
+
+if [[ "${1:-}" != "-h" && "${1:-}" != "--help" && "${1:-}" != "help" && "$(id -u)" -eq 0 ]]; then
+  printf 'Run as your normal desktop user, not with sudo.\n' >&2
+  exit 1
+fi
+
+case "${1:-all}" in
+  all)
+    setup_git
+    setup_docker
+    setup_starship
+    setup_ptyxis
+    setup_flatpaks
+    log 'Finished. Re-login if your Docker group membership changed.'
+    ;;
+  git) setup_git ;;
+  docker) setup_docker ;;
+  starship) setup_starship ;;
+  ptyxis) setup_ptyxis ;;
+  flatpaks) setup_flatpaks ;;
+  status) show_status ;;
+  -h|--help|help)
+    printf 'Usage: %s [all|git|docker|starship|ptyxis|flatpaks|status]\n' "$0"
+    ;;
+  *)
+    printf 'Unknown task: %s\n' "$1" >&2
+    exit 2
+    ;;
+esac
