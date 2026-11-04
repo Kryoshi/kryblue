@@ -65,6 +65,10 @@ packages=(
   gnome-shell-extension-frippery-move-clock
   gnome-shell-extension-pop-shell
   gnome-shell-extension-vertical-workspaces
+  
+  # Graphics diagnostics
+  vulkan-tools
+  glx-utils
 )
 
 dnf5 install -y "${packages[@]}"
