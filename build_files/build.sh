@@ -66,21 +66,53 @@ packages=(
   gnome-shell-extension-pop-shell
   gnome-shell-extension-vertical-workspaces
   
-  # Graphics diagnostics
+  # Hardware monitoring and system info
   vulkan-tools
   glx-utils
+  lm_sensors
+  fastfetch
 )
 
 dnf5 install -y "${packages[@]}"
 
 # ============================================================
+# Nerd Font — JetBrains Mono
+# ============================================================
+
+NERD_FONT_VERSION="v3.5.1"
+NERD_FONT_DIR="/usr/share/fonts/JetBrainsMonoNerdFont"
+
+mkdir -p "$NERD_FONT_DIR"
+
+curl -fsSL --retry 3 \
+  "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONT_VERSION}/JetBrainsMono.tar.xz" \
+  -o /tmp/JetBrainsMono.tar.xz
+
+tar -xJf /tmp/JetBrainsMono.tar.xz \
+  -C "$NERD_FONT_DIR"
+
+rm -f /tmp/JetBrainsMono.tar.xz
+
+fc-cache -f "$NERD_FONT_DIR"
+
+# ============================================================
 # Starship
 # ============================================================
 
-# Install from the Fedora COPR, then disable the repository.
+# Install from the Fedora COPR, then remove
 dnf5 -y copr enable atim/starship
 dnf5 install -y starship
-dnf5 -y copr disable atim/starship
+dnf5 -y copr remove atim/starship
+
+
+# ============================================================
+# CoolerControl
+# ============================================================
+
+# Install from the official CoolerControl COPR, then remove
+dnf5 -y copr enable codifryed/CoolerControl
+dnf5 install -y coolercontrold coolercontrol
+dnf5 -y copr remove codifryed/CoolerControl
 
 
 # ============================================================
@@ -115,3 +147,4 @@ fi
 # ============================================================
 
 systemctl enable docker.service
+systemctl enable coolercontrold.service
