@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kryblue / Kryzite: repeatable user setup after an Atomic OS installation.
-# Usage: ./postinstall.sh [all|git|docker|starship|ptyxis|flatpaks|status]
+# Usage: ./setup.sh [all|git|docker|starship|ptyxis|flatpaks|status]
 # Run as your normal desktop user, not with sudo.
 set -Eeuo pipefail
 
@@ -122,7 +122,7 @@ migrate_fedora_remote() {
   if [[ -n "$remaining" ]]; then
     warn "Fedora $scope remote still has installed refs and was NOT deleted:"
     printf '%s\n' "$remaining" >&2
-    warn 'Review these refs, then rerun: ./postinstall.sh flatpaks'
+    warn 'Review these refs, then rerun: ./setup.sh flatpaks'
     return 0
   fi
   flatpak "--$scope" remote-delete fedora

@@ -101,4 +101,4 @@ The custom image is automatically built and published to GitHub Container Regist
 
 System packages and configuration are defined in `Containerfile` and `build_files/build.sh`.
 
-User-specific settings and Flatpak applications are managed separately through `postinstall.sh`.
+User-specific settings and Flatpak applications are managed separately through `setup.sh`.
