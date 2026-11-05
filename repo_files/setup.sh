@@ -95,38 +95,89 @@ setup_ptyxis() {
   gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
 }
 
-# Migrate Fedora-origin apps when Flathub carries the same app. Never
-# uninstall apps or forcibly delete a remote with still-installed refs.
+# Replace Fedora-origin Flatpak apps with Flathub equivalents without
+# deleting their app data. Never force-remove a remote with installed refs.
 migrate_fedora_remote() {
-  local scope="$1" app origin remaining
+  local scope="$1" app remaining pin
+  local -a apps=()
+
+  # Idempotent: nothing to migrate if Fedora's remote is already gone.
   if ! flatpak "--$scope" remotes --columns=name | grep -Fxq fedora; then
     return 0
   fi
 
-  while IFS=$'\t' read -r app origin; do
-    [[ "$origin" == fedora ]] || continue
-    if flatpak "--$scope" remote-info flathub "$app" >/dev/null 2>&1; then
-      log "Switching $scope app $app to Flathub"
-      if ! flatpak "--$scope" install --reinstall --noninteractive -y flathub "$app"; then
-        warn "Couldn't migrate $app automatically; leaving it installed"
-      fi
-    else
-      warn "No matching Flathub application for $scope app $app"
+  # Snapshot IDs first: Flatpak commands must not consume the loop input.
+  mapfile -t apps < <(
+    flatpak "--$scope" list --app --columns=application,origin |
+      awk -F '\t' '$2 == "fedora" { print $1 }'
+  )
+
+  log "Found ${#apps[@]} Fedora Flatpak apps in $scope scope"
+
+  for app in "${apps[@]}"; do
+    if ! flatpak "--$scope" remote-info flathub "$app" >/dev/null 2>&1; then
+      warn "No matching Flathub application for $scope app $app; keeping Fedora version"
+      continue
     fi
-  done < <(flatpak "--$scope" list --app --columns=application,origin)
 
-  flatpak "--$scope" uninstall --unused --noninteractive -y || true
+    log "Switching $scope app $app to Flathub"
 
-  # Include runtimes and extensions: removing a remote in use strands updates.
-  remaining="$(flatpak "--$scope" list --all --columns=application,origin | awk -F '\t' '$2 == "fedora" {print $1}')"
+    # Uninstall first to avoid Flatpak's 'Update is older than current version'
+    # OSTree timestamp check when changing the remote for the same app ID.
+    # No --delete-data: retain ~/.var/app settings and application data.
+    if ! flatpak "--$scope" uninstall --app --noninteractive -y "$app" </dev/null; then
+      warn "Could not uninstall $scope app $app; keeping Fedora version"
+      continue
+    fi
+
+    if flatpak "--$scope" install --app --noninteractive -y flathub "$app" </dev/null; then
+      log "Migrated $scope app $app to Flathub"
+    else
+      warn "Flathub installation failed for $scope app $app; restoring Fedora version"
+      if ! flatpak "--$scope" install --app --noninteractive -y fedora "$app" </dev/null; then
+        warn "RESTORE FAILED: $app is uninstalled; reinstall it manually"
+      fi
+    fi
+  done
+
+  # Don't unpin Fedora runtimes if Fedora-origin apps are still installed.
+  remaining="$(flatpak "--$scope" list --app --columns=application,origin |
+    awk -F '\t' '$2 == "fedora" { print $1 }')"
+  if [[ -z "$remaining" ]]; then
+    # Fedora images can pin Platform runtimes, preventing --unused cleanup.
+    # Remove only Fedora Platform family pins; leave unrelated pins untouched.
+    while IFS= read -r pin; do
+      case "$pin" in
+        runtime/org.fedoraproject.Platform/*|runtime/org.fedoraproject.Platform.*/*)
+          log "Removing obsolete $scope Fedora runtime pin: $pin"
+          flatpak "--$scope" pin --remove "$pin" ||
+            warn "Could not remove runtime pin: $pin"
+          ;;
+      esac
+    done < <(flatpak "--$scope" pin)
+  fi
+
+  # Uninstall only runtimes/extensions no longer needed by installed apps.
+  if ! flatpak "--$scope" uninstall --unused --noninteractive -y </dev/null; then
+    warn "Could not complete unused-runtime cleanup for $scope scope"
+  fi
+
+  # Include all refs: deleting a remote with installed runtimes would
+  # strand those references without updates.
+  remaining="$(flatpak "--$scope" list --all --columns=application,origin |
+    awk -F '\t' '$2 == "fedora" { print $1 }')"
   if [[ -n "$remaining" ]]; then
     warn "Fedora $scope remote still has installed refs and was NOT deleted:"
     printf '%s\n' "$remaining" >&2
     warn 'Review these refs, then rerun: ./setup.sh flatpaks'
     return 0
   fi
-  flatpak "--$scope" remote-delete fedora
-  log "Removed $scope Fedora Flatpak remote"
+
+  if flatpak "--$scope" remote-delete fedora </dev/null; then
+    log "Removed $scope Fedora Flatpak remote"
+  else
+    warn "Could not remove $scope Fedora remote; no forced deletion attempted"
+  fi
 }
 
 setup_flatpaks() {
@@ -139,14 +190,16 @@ setup_flatpaks() {
   if flatpak --user remotes --columns=name | grep -Fxq flathub; then
     flatpak --user remote-modify --enable --no-filter --subset= flathub
   fi
-
   local manifest app
   manifest="$(mktemp)"
   MANIFEST_TEMP="$manifest"
   curl --fail --silent --show-error --location --retry 3 \
     "$FLATPAKS_URL" --output "$manifest"
   [[ -s "$manifest" ]] || { warn 'Flatpak manifest is empty'; return 1; }
-
+  # Migrate first so manifest installs never hit Fedora-vs-Flathub
+  # OSTree timestamp conflicts for already-installed app IDs.
+  migrate_fedora_remote system
+  migrate_fedora_remote user
   while IFS= read -r app || [[ -n "$app" ]]; do
     app="${app%%#*}"
     app="${app#"${app%%[![:space:]]*}"}"
@@ -158,9 +211,6 @@ setup_flatpaks() {
     fi
     flatpak --system install --noninteractive -y flathub "$app"
   done < "$manifest"
-
-  migrate_fedora_remote system
-  migrate_fedora_remote user
   log 'Flatpak sync complete; no unrelated apps were removed'
 }
 
