@@ -79,7 +79,7 @@ BASHRC
   fi
 }
 
-setup_ptyxis() {
+setup_gnome() {
   log 'Ptyxis opacity (GNOME only)'
   if ! command -v gsettings >/dev/null 2>&1 || \
      ! gsettings list-schemas | grep -Fxq org.gnome.Ptyxis; then
@@ -93,6 +93,9 @@ setup_ptyxis() {
     return
   fi
   gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
+
+  log 'Maximise button'
+  gsettings set org.gnome.desktop.wm.preferences button-layout ':maximize,close'
 }
 
 # Replace Fedora-origin Flatpak apps with Flathub equivalents without
@@ -236,14 +239,14 @@ case "${1:-all}" in
     setup_git
     setup_docker
     setup_starship
-    setup_ptyxis
+    setup_gnome
     setup_flatpaks
     log 'Finished. Re-login if your Docker group membership changed.'
     ;;
   git) setup_git ;;
   docker) setup_docker ;;
   starship) setup_starship ;;
-  ptyxis) setup_ptyxis ;;
+  gnome) setup_gnome ;;
   flatpaks) setup_flatpaks ;;
   status) show_status ;;
   -h|--help|help)
