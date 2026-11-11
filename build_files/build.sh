@@ -63,7 +63,6 @@ packages=(
   gnome-shell-extension-blur-my-shell
   gnome-shell-extension-caffeine
   gnome-shell-extension-frippery-move-clock
-  gnome-shell-extension-pop-shell
   gnome-shell-extension-vertical-workspaces
   
   # Hardware monitoring and system info
@@ -74,6 +73,22 @@ packages=(
 )
 
 dnf5 install -y "${packages[@]}"
+
+# ============================================================
+# Shatter Shell (Pop Shell replacement)
+# ============================================================
+
+# Bootstrap the Terra repository and signing keys
+dnf5 install -y --nogpgcheck \
+  --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
+  terra-release terra-gpg-keys
+
+# Install Shatter Shell
+dnf5 install -y --enablerepo=terra \
+  gnome-shell-extension-shatter-shell
+
+# Remove Terra repository from the final image
+dnf5 remove -y terra-release
 
 # ============================================================
 # Nerd Font — JetBrains Mono
