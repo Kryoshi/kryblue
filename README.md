@@ -10,7 +10,7 @@ Designed as a minimal, general-purpose Silverblue workstation with additional de
 
 Download and install the official [Fedora Silverblue ISO](https://fedoraproject.org/atomic-desktops/silverblue/download).
 
-Prefer the same Fedora major version as the image's `Containerfile` (currently Fedora 44).
+Prefer the same Fedora major version as the image's `Containerfile` (currently Fedora 45).
 
 Intended storage layout:
 
@@ -18,8 +18,6 @@ Intended storage layout:
 | ---------- | ------------------------------------------------ | ----------- |
 | 512 GB SSD | OS, boot partitions, system applications, Docker | `/`         |
 | 2 TB SSD   | Home directories, games, projects, personal data | `/var/home` |
-
-On Fedora Atomic, `/home` is a symlink to `/var/home`.
 
 Keep the drives as separate filesystems. Back up important files before changing partitions.
 
@@ -34,7 +32,7 @@ sudo reboot
 
 Optionally switch to signature verified updates:
 
-```
+```bash
 sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/kryoshi/kryblue:latest
 sudo reboot
 ```
