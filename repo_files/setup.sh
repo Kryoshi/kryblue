@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kryblue / Kryzite: repeatable user setup after an Atomic OS installation.
-# Usage: ./setup.sh [all|git|docker|starship|ptyxis|flatpaks|sunshine|status]
+# Usage: ./setup.sh [all|git|docker|starship|gnome|flatpaks|sunshine|status]
 # Run as your normal desktop user, not with sudo.
 set -Eeuo pipefail
 
@@ -107,8 +107,10 @@ setup_gnome() {
   fi
   gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
 
-  log 'Maximise button'
-  gsettings set org.gnome.desktop.wm.preferences button-layout ':maximize,close'
+  log 'Minimise button'
+  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimise,close'
+
+  gnome-extensions enable shatter-shell@adilhanney.com
 }
 
 # Replace Fedora-origin Flatpak apps with Flathub equivalents without
@@ -283,7 +285,7 @@ case "${1:-all}" in
   sunshine) setup_sunshine ;;
   status) show_status ;;
   -h|--help|help)
-    printf 'Usage: %s [all|git|docker|starship|ptyxis|flatpaks|sunshine|status]\n' "$0"
+    printf 'Usage: %s [all|git|docker|starship|gnome|flatpaks|sunshine|status]\n' "$0"
     ;;
   *)
     printf 'Unknown task: %s\n' "$1" >&2
