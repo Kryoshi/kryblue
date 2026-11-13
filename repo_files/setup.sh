@@ -227,12 +227,24 @@ show_status() {
   log 'Git author'
   git config --global --get user.name || true
   git config --global --get user.email || true
+  
   log 'GitHub authentication'
   gh auth status --hostname github.com || true
+
   log 'Flatpak remotes'
   flatpak remotes || true
+
   log 'Docker group (may require re-login)'
   id -nG || true
+
+  log 'Sunshine'
+  rpm -q Sunshine || true
+
+  log 'Sunshine service'
+  printf 'Enabled: '
+  systemctl --user is-enabled app-dev.lizardbyte.app.Sunshine.service || true
+  printf 'Active:  '
+  systemctl --user is-active app-dev.lizardbyte.app.Sunshine.service || true
 }
 
 if [[ "${1:-}" != "-h" && "${1:-}" != "--help" && "${1:-}" != "help" && "$(id -u)" -eq 0 ]]; then
