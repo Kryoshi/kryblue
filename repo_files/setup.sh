@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kryblue / Kryzite: repeatable user setup after an Atomic OS installation.
-# Usage: ./setup.sh [all|git|docker|starship|ptyxis|flatpaks|status]
+# Usage: ./setup.sh [all|git|docker|starship|ptyxis|flatpaks|sunshine|status]
 # Run as your normal desktop user, not with sudo.
 set -Eeuo pipefail
 
@@ -217,6 +217,12 @@ setup_flatpaks() {
   log 'Flatpak sync complete; no unrelated apps were removed'
 }
 
+setup_sunshine() {
+  log 'Sunshine game streaming'
+  need sunshine
+  systemctl --user enable --now app-dev.lizardbyte.app.Sunshine.service
+}
+
 show_status() {
   log 'Git author'
   git config --global --get user.name || true
@@ -241,6 +247,7 @@ case "${1:-all}" in
     setup_starship
     setup_gnome
     setup_flatpaks
+    setup_sunshine
     log 'Finished. Re-login if your Docker group membership changed.'
     ;;
   git) setup_git ;;
@@ -248,9 +255,10 @@ case "${1:-all}" in
   starship) setup_starship ;;
   gnome) setup_gnome ;;
   flatpaks) setup_flatpaks ;;
+  sunshine) setup_sunshine ;;
   status) show_status ;;
   -h|--help|help)
-    printf 'Usage: %s [all|git|docker|starship|ptyxis|flatpaks|status]\n' "$0"
+    printf 'Usage: %s [all|git|docker|starship|ptyxis|flatpaks|sunshine|status]\n' "$0"
     ;;
   *)
     printf 'Unknown task: %s\n' "$1" >&2

@@ -119,7 +119,6 @@ dnf5 -y copr enable atim/starship
 dnf5 install -y starship
 dnf5 -y copr remove atim/starship
 
-
 # ============================================================
 # CoolerControl
 # ============================================================
@@ -129,6 +128,14 @@ dnf5 -y copr enable codifryed/CoolerControl
 dnf5 install -y coolercontrold coolercontrol
 dnf5 -y copr remove codifryed/CoolerControl
 
+# ============================================================
+# Sunshine - Moonlight game streaming host
+# ============================================================
+
+# Install from official LizardByte stable COPR, then remove
+dnf5 -y copr enable lizardbyte/stable
+dnf5 install -y Sunshine
+dnf5 -y copr remove lizardbyte/stable
 
 # ============================================================
 # Remove unwanted base applications
