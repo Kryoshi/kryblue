@@ -46,13 +46,26 @@ setup_git() {
 setup_docker() {
   log 'Docker Engine'
   need docker
+  local user
+  user="$(id -un)"
+
+  if id -nG "$user" | tr ' ' '\n' | grep -Fxq docker &&
+     systemctl is-enabled --quiet docker.service; then
+    log 'Docker already configured; skipping'
+    return 0
+  fi
+
   need sudo
-  sudo groupadd --force docker
+  if ! getent group docker >/dev/null; then
+    sudo groupadd docker
+  fi
   if ! id -nG "$(id -un)" | tr ' ' '\n' | grep -Fxq docker; then
     sudo usermod -aG docker "$(id -un)"
     warn 'Docker group added. Log out and back in for group membership to take effect.'
   fi
-  sudo systemctl enable --now docker.service
+  if ! systemctl is-enabled --quiet docker.service; then
+    sudo systemctl enable --now docker.service
+  fi
 }
 
 setup_starship() {
@@ -227,7 +240,7 @@ show_status() {
   log 'Git author'
   git config --global --get user.name || true
   git config --global --get user.email || true
-  
+
   log 'GitHub authentication'
   gh auth status --hostname github.com || true
 
