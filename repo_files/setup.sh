@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Kryblue / Kryzite: repeatable user setup after an Atomic OS installation.
-# Usage: ./setup.sh [all|git|docker|starship|gnome|flatpaks|sunshine|status]
+# Usage: ./setup.sh [all|git|docker|starship|gnome|flatpaks|streaming|status]
 # Run as your normal desktop user, not with sudo.
 set -Eeuo pipefail
 
@@ -232,10 +232,11 @@ setup_flatpaks() {
   log 'Flatpak sync complete; no unrelated apps were removed'
 }
 
-setup_sunshine() {
-  log 'Sunshine game streaming'
-  need sunshine
-  systemctl --user enable --now app-dev.lizardbyte.app.Sunshine.service
+setup_streaming() {
+  log 'Game Streaming'
+  # log 'Sunshine'
+  # need sunshine
+  # systemctl --user enable --now app-dev.lizardbyte.app.Sunshine.service
 }
 
 show_status() {
@@ -252,14 +253,14 @@ show_status() {
   log 'Docker group (may require re-login)'
   id -nG || true
 
-  log 'Sunshine'
-  rpm -q Sunshine || true
+  # log 'Sunshine'
+  # rpm -q Sunshine || true
 
-  log 'Sunshine service'
-  printf 'Enabled: '
-  systemctl --user is-enabled app-dev.lizardbyte.app.Sunshine.service || true
-  printf 'Active:  '
-  systemctl --user is-active app-dev.lizardbyte.app.Sunshine.service || true
+  # log 'Sunshine service'
+  # printf 'Enabled: '
+  # systemctl --user is-enabled app-dev.lizardbyte.app.Sunshine.service || true
+  # printf 'Active:  '
+  # systemctl --user is-active app-dev.lizardbyte.app.Sunshine.service || true
 }
 
 if [[ "${1:-}" != "-h" && "${1:-}" != "--help" && "${1:-}" != "help" && "$(id -u)" -eq 0 ]]; then
@@ -274,7 +275,7 @@ case "${1:-all}" in
     setup_starship
     setup_gnome
     setup_flatpaks
-    setup_sunshine
+    setup_streaming
     log 'Finished. Re-login if your Docker group membership changed.'
     ;;
   git) setup_git ;;
@@ -282,10 +283,10 @@ case "${1:-all}" in
   starship) setup_starship ;;
   gnome) setup_gnome ;;
   flatpaks) setup_flatpaks ;;
-  sunshine) setup_sunshine ;;
+  streaming) setup_streaming ;;
   status) show_status ;;
   -h|--help|help)
-    printf 'Usage: %s [all|git|docker|starship|gnome|flatpaks|sunshine|status]\n' "$0"
+    printf 'Usage: %s [all|git|docker|starship|gnome|flatpaks|streaming|status]\n' "$0"
     ;;
   *)
     printf 'Unknown task: %s\n' "$1" >&2
