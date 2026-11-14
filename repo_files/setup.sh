@@ -401,14 +401,37 @@ setup_streaming() {
     touch "$state_dir/linger-enabled"
   fi
 
-  # The sysext normally supplies the udev rule; don't create a duplicate.
-  if [[ ! -f /usr/lib/udev/rules.d/60-punktfunk.rules &&
-        ! -f /etc/udev/rules.d/60-punktfunk.rules ]]; then
-    warn 'Punktfunk udev rule missing; check controller support after reboot'
-  else
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger --action=add --subsystem-match=misc
+  # The sysext merges after udev coldplug, so persist the USB/IP rule in /etc.
+  local vendor_rule=/usr/lib/udev/rules.d/60-punktfunk.rules
+  local host_rule=/etc/udev/rules.d/60-punktfunk.rules
+  if [[ ! -f "$vendor_rule" ]]; then
+    warn 'Punktfunk udev rule missing from the sysext'
+    return 1
   fi
+  
+  if ! sudo cmp -s "$vendor_rule" "$host_rule"; then
+    sudo install -Dm644 "$vendor_rule" "$host_rule"
+    log 'Synchronized Punktfunk udev rule for early boot'
+  fi
+
+  # Seats is disabled: remove only a redundant, unmodified early-boot rule.
+  local host_seats_rule=/etc/udev/rules.d/65-punktfunk-seats.rules
+  local vendor_seats_rule=/usr/lib/udev/rules.d/65-punktfunk-seats.rules
+  if [[ -f "$host_seats_rule" ]]; then
+    if [[ -f "$vendor_seats_rule" ]] &&
+       sudo cmp -s "$vendor_seats_rule" "$host_seats_rule"; then
+      sudo rm -f -- "$host_seats_rule"
+      log 'Removed redundant early-boot Punktfunk Seats rule'
+    else
+      warn 'Keeping customized Punktfunk Seats rule in /etc'
+    fi
+  fi
+
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger --action=add --subsystem-match=misc
+  sudo modprobe vhci-hcd
+  sudo udevadm trigger --action=add --subsystem-match=platform --sysname-match='vhci_hcd.*'
+  sudo udevadm settle
   if [[ ! -e /dev/uinput ]]; then
     warn '/dev/uinput is missing; virtual controllers may not work'
   elif [[ "$(stat -c '%G' /dev/uinput)" != input ]]; then
