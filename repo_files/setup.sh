@@ -108,7 +108,7 @@ setup_gnome() {
   gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
 
   log 'Minimise button'
-  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimise,close'
+  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,close'
 
   gnome-extensions enable shatter-shell@adilhanney.com
 }
