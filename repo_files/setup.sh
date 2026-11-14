@@ -20,27 +20,59 @@ setup_git() {
   need git
   need gh
 
-  # Git commit author != GitHub authentication. Both are configured here.
-  git config --global user.name "$GIT_NAME"
-  git config --global user.email "$GIT_EMAIL"
-  git config --global init.defaultBranch main
-  git config --global pull.rebase false
-  if command -v code >/dev/null 2>&1; then
+  local changed=0 key current i
+  local -a keys=(user.name user.email init.defaultBranch pull.rebase)
+  local -a values=("$GIT_NAME" "$GIT_EMAIL" main false)
+
+  # Only update settings that differ from Kryblue's desired defaults.
+  for i in "${!keys[@]}"; do
+    key="${keys[$i]}"
+    current="$(git config --global --get "$key" 2>/dev/null || true)"
+    if [[ "$current" != "${values[$i]}" ]]; then
+      git config --global "$key" "${values[$i]}"
+      log "Updated Git setting: $key"
+      changed=1
+    fi
+  done
+
+  # Set VS Code only when no global editor preference exists.
+  if command -v code >/dev/null 2>&1 &&
+     ! git config --global --get core.editor >/dev/null 2>&1; then
     git config --global core.editor 'code --wait'
+    log 'Configured VS Code as Git editor'
+    changed=1
   fi
 
-  # GitHub CLI supplies HTTPS credentials; no SSH key or saved PAT required.
-  gh config set git_protocol https --host github.com
+  # Keep GitHub CLI's HTTPS protocol setting without rewriting it each run.
+  if [[ "$(gh config get git_protocol --host github.com 2>/dev/null || true)" != https ]]; then
+    gh config set git_protocol https --host github.com
+    changed=1
+  fi
+
+  # Only prompt for authentication if the existing session is invalid/missing.
   if ! gh auth status --hostname github.com >/dev/null 2>&1; then
     if [[ ! -t 0 ]]; then
-      warn 'Git identity is set, but interactive GitHub login is required.'
+      warn 'Git identity is configured, but interactive GitHub login is required.'
       warn 'Run: gh auth login --hostname github.com --git-protocol https --web'
       return 1
     fi
     gh auth login --hostname github.com --git-protocol https --web
+    changed=1
   fi
-  gh auth setup-git --hostname github.com
-  log "Git configured for $GIT_NAME <$GIT_EMAIL>"
+
+  # `gh auth setup-git` is needed only if the gh credential helper is absent.
+  if ! git config --global --get-all 'credential.https://github.com.helper' 2>/dev/null |
+       grep -Fq 'gh auth git-credential'; then
+    gh auth setup-git --hostname github.com
+    log 'Configured GitHub CLI as Git credential helper'
+    changed=1
+  fi
+
+  if (( changed )); then
+    log "Git configuration updated for $GIT_NAME <$GIT_EMAIL>"
+  else
+    log 'Git and GitHub CLI already configured; skipping'
+  fi
 }
 
 setup_docker() {
