@@ -93,6 +93,11 @@ BASHRC
 }
 
 setup_gnome() {
+  log 'Minimise button'
+  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,close'
+
+  gnome-extensions enable shatter-shell@adilhanney.com
+
   log 'Ptyxis opacity (GNOME only)'
   if ! command -v gsettings >/dev/null 2>&1 || \
      ! gsettings list-schemas | grep -Fxq org.gnome.Ptyxis; then
@@ -106,11 +111,6 @@ setup_gnome() {
     return
   fi
   gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/$profile/" opacity 0.9
-
-  log 'Minimise button'
-  gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,close'
-
-  gnome-extensions enable shatter-shell@adilhanney.com
 }
 
 # Replace Fedora-origin Flatpak apps with Flathub equivalents without
@@ -246,275 +246,285 @@ streaming_group_member() {
   id -nG "$(id -un)" | tr ' ' '\n' | grep -Fxq "$1"
 }
 
-# Offer to replace the initial plaintext password. Punktfunk swaps plaintext
-# for a salted hash on the first successful Web Console sign-in. No marker needed.
-setup_streaming_password() {
-  local config_dir="$HOME/.config/punktfunk"
-  local pwfile="$config_dir/web-password"
-  local password confirm escaped tmp
-
-  if [[ ! -s "$pwfile" ]]; then
-    warn 'Punktfunk password file not initialized yet; skipping password prompt.'
-    return 0
-  fi
-
-  # Do not overwrite an already initialized (hashed) password.
-  # Current Punktfunk uses PUNKTFUNK_UI_PASSWORD_HASH for the stored hash.
-  if grep -q '^PUNKTFUNK_UI_PASSWORD_HASH=' "$pwfile"; then
-    return 0
-  fi
-
-  # Password has to still be in the initial plaintext form.
-  if ! grep -q '^PUNKTFUNK_UI_PASSWORD=' "$pwfile"; then
-    warn 'Unknown Punktfunk password-file format; leaving it unchanged.'
-    return 0
-  fi
-
-  # In loginless (door) mode credentials may have moved to the system seat.
-  # Set the password before activating this mode in the Web Console.
-  if sudo test -s /var/lib/punktfunk-seats/owner; then
-    warn 'Loginless mode already active; manage the console password through Punktfunk.'
-    return 0
-  fi
-
-  if ! streaming_confirm 'Set a memorable Punktfunk Web Console password now?'; then
-    return 0
-  fi
-
-  if [[ ! -t 0 ]]; then
-    warn 'Password setup requires an interactive terminal.'
+# Run the official, checksum-verifying Punktfunk guided installer without
+# piping an unaudited network response directly into a shell.
+run_punktfunk_installer() {
+  local installer rc
+  need curl
+  installer="$(mktemp "${TMPDIR:-/tmp}/punktfunk-install.XXXXXXXX.sh")" || return 1
+  if ! curl -fsSL --retry 3 https://punktfunk.unom.io/install.sh -o "$installer"; then
+    rm -f -- "$installer"
+    warn 'Could not download the Punktfunk guided installer'
     return 1
   fi
-
-  read -r -s -p 'New password (12+ characters): ' password || return 1
-  printf '\n'
-  read -r -s -p 'Confirm password: ' confirm || return 1
-  printf '\n'
-
-  if [[ "$password" != "$confirm" ]]; then
-    warn 'Passwords do not match; existing password unchanged.'
-    return 1
-  fi
-  if (( ${#password} < 12 )); then
-    warn 'Use at least 12 characters; existing password unchanged.'
-    return 1
-  fi
-
-  # systemd EnvironmentFile syntax: quote and escape \ and ".
-  escaped=${password//\\/\\\\}
-  escaped=${escaped//\"/\\\"}
-
-  # Write mode-600 credentials via an atomic replacement in the same dir.
-  (umask 077; mkdir -p "$config_dir") || return 1
-  tmp="$(umask 077; mktemp "$config_dir/.web-password.XXXXXX")" || return 1
-  if ! printf 'PUNKTFUNK_UI_PASSWORD="%s"\n' "$escaped" > "$tmp" ||
-     ! mv -f -- "$tmp" "$config_dir/web-password"; then
-    rm -f -- "$tmp"
-    warn 'Could not save Web Console password.'
-    return 1
-  fi
-  chmod 600 "$config_dir/web-password"
-  unset password confirm escaped
-
-  if systemctl --user is-active --quiet punktfunk-web.service; then
-    systemctl --user restart punktfunk-web.service || return 1
+  if sh "$installer" "$@"; then
+    rc=0
   else
-    log 'Web Console not running; password will apply on its next start.'
+    rc=$?
+  fi
+  rm -f -- "$installer"
+  return "$rc"
+}
+
+# Fedora Atomic can expose vendor groups through /usr/lib/group without an
+# /etc/group entry.  Some usermod/gpasswd operations then fail to persist.
+# Create a local entry only when required, retaining the vendor GID.
+streaming_ensure_group() {
+  local group="$1" user="$2" state_dir="$3" entry
+
+  if ! getent group "$group" >/dev/null; then
+    if [[ "$group" == input ]]; then
+      warn 'Required system group input was not found'
+      return 1
+    fi
+    sudo groupadd --system "$group"
+    touch "$state_dir/group-created.$group"
   fi
 
-  log 'Punktfunk Web Console password configured. Sign in once to let Punktfunk hash it.'
+  if ! grep -q "^${group}:" /etc/group; then
+    entry="$(getent group "$group")" || return 1
+    printf '%s\n' "$entry" | sudo tee -a /etc/group >/dev/null
+    touch "$state_dir/group-local-entry-created.$group"
+  fi
+
+  if ! id -nG "$user" | tr ' ' '\n' | grep -Fxq "$group"; then
+    sudo gpasswd -a "$user" "$group"
+    if ! id -nG "$user" | tr ' ' '\n' | grep -Fxq "$group"; then
+      warn "Membership in $group did not persist"
+      return 1
+    fi
+    touch "$state_dir/member-added.$group"
+    return 10  # Inform caller that reboot is needed.
+  fi
+  return 0
 }
 
 setup_streaming() {
   log 'Punktfunk streaming (Fedora Atomic sysext)'
-  need curl
+  local user state_dir group had_input=0 had_linger=0 changed=0 rc
+  user="$(id -un)"
+  state_dir="$HOME/.local/state/kryblue/streaming"
   need sudo
-  need systemctl
   need loginctl
+  need systemctl
   need getent
+  if [[ ! -e /run/ostree-booted ]]; then
+    warn 'This setup expects Fedora Atomic (an OSTree booted system) for the sysext install.'
+    return 1
+  fi
+  mkdir -p "$state_dir"
 
-  if ! command -v punktfunk-sysext >/dev/null 2>&1 ||
-     ! command -v punktfunk-host >/dev/null 2>&1; then
-    if ! streaming_confirm 'Install Punktfunk stable via its official guided installer?'; then
-      log 'Punktfunk installation skipped'
+  streaming_group_member input && had_input=1 || true
+  [[ "$(loginctl show-user "$user" -p Linger --value)" == yes ]] && had_linger=1 || true
+
+  if ! command -v punktfunk-sysext >/dev/null 2>&1; then
+    log 'Punktfunk not installed; showing the official guided install plan'
+    log 'Review carefully: Kryblue must use the Fedora Atomic sysext, not DNF layering.'
+    run_punktfunk_installer --dry-run --host --channel stable \
+      --linger --punktfunk-group --no-gamestream --no-console-cert
+
+    if ! streaming_confirm 'Continue with the official interactive Punktfunk installer?'; then
+      log 'Streaming installation cancelled'
       return 0
     fi
-
-    local installer
-    installer="$(mktemp)"
-    if ! curl -fsSL --retry 3 https://punktfunk.unom.io/install.sh -o "$installer"; then
-      rm -f "$installer"
-      warn 'Could not download the Punktfunk installer'
-      return 1
-    fi
-
-    log "Downloaded upstream installer to $installer"
-    if streaming_confirm 'Review the downloaded installer first?'; then
-      if command -v less >/dev/null 2>&1; then
-        less "$installer"
-      else
-        cat "$installer"
-      fi
-    fi
-    if ! sh "$installer" --host --channel stable --linger --no-gamestream --no-console-cert; then
-      rm -f "$installer"
-      warn 'Punktfunk installation failed'
-      return 1
-    fi
-    rm -f "$installer"
+    # Upstream handles sysext download, service setup, firewall, port conflicts
+    # with Sunshine, and the interactive first-use console password.
+    run_punktfunk_installer --host --channel stable \
+      --linger --punktfunk-group --no-gamestream --no-console-cert
   else
-    log 'Punktfunk sysext already installed; not reinstalling or updating'
+    log 'Punktfunk already installed; keeping the installed version and settings'
   fi
 
-  command -v punktfunk-host >/dev/null 2>&1 || {
-    warn 'Punktfunk host is not available after installation'
+  if ! command -v punktfunk-host >/dev/null 2>&1 ||
+     ! command -v punktfunk-sysext >/dev/null 2>&1; then
+    warn 'Punktfunk sysext is not merged; check: sudo systemd-sysext status'
     return 1
-  }
+  fi
 
-  local group changed=0
+  # The guided installer may use usermod. Repair Atomic group persistence and
+  # ensure the update permission needed for loginless owner sessions.
   for group in input punktfunk punktfunk-update; do
-    if ! getent group "$group" >/dev/null; then
-      warn "Expected group missing: $group; check sysext install and group setup"
-      return 1
-    fi
-    if ! streaming_group_member "$group"; then
-      sudo usermod -aG "$group" "$(id -un)"
-      log "Added $(id -un) to $group"
-      changed=1
+    if streaming_ensure_group "$group" "$user" "$state_dir"; then
+      :
+    else
+      rc=$?
+      if (( rc == 10 )); then
+        changed=1
+      else
+        return "$rc"
+      fi
     fi
   done
-
-  if [[ "$(loginctl show-user "$(id -un)" -p Linger --value)" != yes ]]; then
-    sudo loginctl enable-linger "$(id -un)"
-    log 'Systemd lingering enabled'
-  else
-    log 'Lingering already enabled'
+  if (( ! had_input )) && streaming_group_member input; then
+    touch "$state_dir/member-added.input"
+    changed=1
   fi
 
-  if command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --state >/dev/null 2>&1; then
-    local zone service
-    zone="$(sudo firewall-cmd --get-active-zones | awk '/^[^[:space:]]/ {print $1; exit}')"
-    zone="${zone:-$(sudo firewall-cmd --get-default-zone)}"
-    log "Configuring Punktfunk ports in firewalld zone: $zone"
-    sudo firewall-cmd --reload
-    for service in punktfunk-native punktfunk-web; do
-      if ! sudo firewall-cmd --permanent --zone="$zone" --query-service="$service" >/dev/null 2>&1; then
-        sudo firewall-cmd --permanent --zone="$zone" --add-service="$service"
-      fi
-    done
-    if [[ -f "$HOME/.config/punktfunk/host.env" ]] &&
-       grep -Eq '^PUNKTFUNK_MGMT_BIND=[^#[:space:]]+:47991[[:space:]]*$' "$HOME/.config/punktfunk/host.env"; then
-      if ! sudo firewall-cmd --permanent --zone="$zone" --query-port=47991/tcp >/dev/null 2>&1; then
-        sudo firewall-cmd --permanent --zone="$zone" --add-port=47991/tcp
-      fi
-    fi
-    sudo firewall-cmd --reload
-  else
-    warn 'Firewalld is not running; firewall setup skipped'
+  # If upstream enabled lingering, record that this setup introduced it.
+  if [[ "$(loginctl show-user "$user" -p Linger --value)" != yes ]]; then
+    sudo loginctl enable-linger "$user"
+  fi
+  if (( ! had_linger )) &&
+     [[ "$(loginctl show-user "$user" -p Linger --value)" == yes ]]; then
+    touch "$state_dir/linger-enabled"
   fi
 
+  # The sysext normally supplies the udev rule; don't create a duplicate.
+  if [[ ! -f /usr/lib/udev/rules.d/60-punktfunk.rules &&
+        ! -f /etc/udev/rules.d/60-punktfunk.rules ]]; then
+    warn 'Punktfunk udev rule missing; check controller support after reboot'
+  else
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --action=add --subsystem-match=misc
+  fi
+  if [[ ! -e /dev/uinput ]]; then
+    warn '/dev/uinput is missing; virtual controllers may not work'
+  elif [[ "$(stat -c '%G' /dev/uinput)" != input ]]; then
+    warn '/dev/uinput is not owned by input; check udev permissions'
+  fi
+
+  # Do not enable user services here: loginless/door mode uses a different
+  # service arrangement. The guided installer already enables the normal host.
   if sudo test -s /var/lib/punktfunk-seats/owner; then
-    log 'Loginless door mode already configured; leaving its service layout intact'
-  else
-    systemctl --user enable --now punktfunk-host.service punktfunk-web.service
-    log 'Punktfunk user services are enabled'
+    log 'Loginless door mode is configured; leaving its services unchanged'
   fi
-
-  setup_streaming_password
 
   if (( changed )); then
-    warn 'Reboot required for new group memberships and loginless streaming permissions.'
+    warn 'Reboot before using newly granted controller/loginless permissions.'
   fi
-  log 'For loginless sessions: after reboot, open Punktfunk Web Console -> Profiles -> Reachable without logging in, and enable it.'
+  log 'For loginless streaming: open Web Console -> Profiles -> Reachable without logging in after reboot.'
+  log 'To update Punktfunk later, use: sudo punktfunk-sysext update'
 }
 
 remove_streaming() {
-  log 'Remove Punktfunk sysext and system integration (keep user settings)'
+  log 'Remove Punktfunk and system integration (preserve user configuration)'
+  local user state_dir zone service group members marker
+  local purge_port=0
+  user="$(id -un)"
+  state_dir="$HOME/.local/state/kryblue/streaming"
   need sudo
   need systemctl
+  need loginctl
 
-  # The loginless door must be switched off in the Web Console so that
-  # identity, keys and pairing data move back to ~/.config/punktfunk.
+  # The door must release credentials/identity back to the user's home first.
   if sudo systemctl is-active --quiet punktfunk-door.service 2>/dev/null ||
      sudo test -s /var/lib/punktfunk-seats/owner; then
-    warn 'Reachable without logging in is still active.'
-    warn 'In the Punktfunk Web Console, open Profiles, turn it off,'
-    warn 'remove any extra seat profiles, and then retry uninstall.'
+    warn 'Disable Profiles -> Reachable without logging in and remove extra seats first.'
+    warn 'Verify credentials returned to ~/.config/punktfunk before uninstalling.'
     return 1
   fi
 
-  if ! streaming_confirm 'Remove Punktfunk, its services, groups, firewall access and lingering?'; then
+  if ! streaming_confirm 'Uninstall Punktfunk and its system components?'; then
     log 'Removal cancelled'
     return 0
   fi
 
-  local unit
-  for unit in punktfunk-host punktfunk-web punktfunk-scripting punktfunk-kde-session; do
-    systemctl --user disable --now "$unit.service" 2>/dev/null || true
-  done
+  # Remove Punktfunk-specific firewall services. Keep unrelated numeric
+  # ports unless the user explicitly approves their removal.
+  if command -v firewall-cmd >/dev/null 2>&1 &&
+     sudo firewall-cmd --state >/dev/null 2>&1; then
+    log 'Removing Punktfunk-named firewall services (native, web, gamestream)'
+    streaming_confirm 'Remove untracked TCP 47991 firewall rules too?' &&
+      purge_port=1 || true
 
-  # Firewall service definitions can disappear with the sysext, so clean first.
-  if command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --state >/dev/null 2>&1; then
-    local zone service
     for zone in $(sudo firewall-cmd --get-zones); do
       for service in punktfunk-native punktfunk-web punktfunk-gamestream; do
-        if sudo firewall-cmd --permanent --zone="$zone" --query-service="$service" >/dev/null 2>&1; then
+        marker="$state_dir/fw-service.$zone.$service"
+        if sudo firewall-cmd --permanent --zone="$zone" \
+             --query-service="$service" >/dev/null 2>&1; then
           sudo firewall-cmd --permanent --zone="$zone" --remove-service="$service"
         fi
+        rm -f -- "$marker"
       done
-      if sudo firewall-cmd --permanent --zone="$zone" --query-port=47991/tcp >/dev/null 2>&1; then
-        sudo firewall-cmd --permanent --zone="$zone" --remove-port=47991/tcp
+      marker="$state_dir/fw-port.$zone.47991-tcp"
+      if [[ -f "$marker" ]] || (( purge_port )); then
+        if sudo firewall-cmd --permanent --zone="$zone" \
+             --query-port=47991/tcp >/dev/null 2>&1; then
+          sudo firewall-cmd --permanent --zone="$zone" --remove-port=47991/tcp
+        fi
+        rm -f -- "$marker"
       fi
     done
     sudo firewall-cmd --reload
+  else
+    warn 'Firewalld not running; check for remaining Punktfunk firewall rules'
   fi
 
-  # Stop system-level loginless/seat services before removing sysext units.
-  for unit in punktfunk-door punktfunk-web-door punktfunk-seats; do
-    sudo systemctl disable --now "$unit.service" 2>/dev/null || true
-  done
-
+  # Upstream handles stopping services and uninstalling the sysext; do not
+  # delete its image/files manually before that process completes.
   if command -v punktfunk-sysext >/dev/null 2>&1; then
-    sudo punktfunk-sysext remove
+    run_punktfunk_installer --uninstall
+  else
+    log 'Punktfunk sysext already absent; cleaning remaining integration'
   fi
 
-  sudo rm -f /etc/modules-load.d/punktfunk.conf /etc/udev/rules.d/60-punktfunk.rules
+  # Upstream lists these as remaining after sysext removal.
+  sudo rm -f /etc/modules-load.d/punktfunk.conf \
+    /etc/udev/rules.d/60-punktfunk.rules
+  sudo udevadm control --reload-rules
   rm -f "$HOME/.config/autostart/io.unom.punktfunk.tray.desktop"
-  local dropin group
+  local dropin
   for dropin in "$HOME"/.config/systemd/user/punktfunk-*.service.d; do
     [[ -d "$dropin" ]] && rm -rf -- "$dropin"
   done
   systemctl --user daemon-reload
+  sudo systemctl daemon-reload
 
-  for group in punktfunk punktfunk-update; do
+  # Only remove the Punktfunk-specific account and groups, never arbitrary
+  # nonempty groups or other users' memberships.
+  if getent passwd punktfunk >/dev/null 2>&1; then
+    sudo userdel punktfunk || warn 'Punktfunk system account could not be removed'
+  fi
+  for group in punktfunk punktfunk-update punktfunk-door punktfunk-games; do
     if getent group "$group" >/dev/null; then
-      sudo gpasswd -d "$(id -un)" "$group" >/dev/null 2>&1 || true
+      sudo gpasswd -d "$user" "$group" >/dev/null 2>&1 || true
+      members="$(getent group "$group" | cut -d: -f4)"
+      if [[ -z "$members" ]]; then
+        sudo groupdel "$group" || warn "Could not remove Punktfunk group: $group"
+      else
+        warn "Keeping group $group: other members remain ($members)"
+      fi
     fi
   done
-  # The door's system account may remain after switching loginless off.
-  # userdel (without -r) intentionally preserves /var/lib/punktfunk data.
-  if getent passwd punktfunk >/dev/null; then
-    sudo userdel punktfunk || warn 'Could not remove Punktfunk system user'
-  fi
-  for group in punktfunk-games punktfunk-door punktfunk-update punktfunk; do
-    if getent group "$group" >/dev/null; then
-      sudo groupdel "$group" || warn "Could not remove group $group (check group usage)"
-    fi
-  done
 
-  if streaming_group_member input && streaming_confirm 'Also remove your input group membership (may affect other software)?'; then
-    sudo gpasswd -d "$(id -un)" input
-  fi
-
-  if [[ "$(loginctl show-user "$(id -un)" -p Linger --value)" == yes ]]; then
-    warn 'Disabling lingering may stop other user services after you log out.'
-    if streaming_confirm 'Disable lingering for your user?'; then
-      sudo loginctl disable-linger "$(id -un)"
+  # The input group is shared. A prior setup may have added the membership;
+  # ask rather than revoking it silently, including on older installations.
+  if getent group input >/dev/null 2>&1 && streaming_group_member input; then
+    if streaming_confirm 'Remove your input-group membership? (may affect other apps)'; then
+      sudo gpasswd -d "$user" input
+      rm -f -- "$state_dir/member-added.input"
     fi
   fi
+  if [[ -f "$state_dir/group-local-entry-created.input" ||
+        -f "$state_dir/input-local-entry-created" ]] &&
+     grep -q '^input:' /etc/group; then
+    members="$(awk -F: '$1=="input" {print $4}' /etc/group)"
+    if [[ -z "$members" ]]; then
+      if streaming_confirm 'Remove the Kryblue-created local input-group override?'; then
+        sudo groupdel input
+        rm -f -- "$state_dir/group-local-entry-created.input" \
+          "$state_dir/input-local-entry-created"
+      fi
+    else
+      warn 'Keeping the local input-group override: members remain'
+    fi
+  fi
 
-  log 'Punktfunk removed; ~/.config/punktfunk was preserved.'
-  warn 'Reboot to apply removed group memberships and device rules.'
+  # Lingering is shared with other user services (including Docker-related
+  # workflows). Always ask before disabling it.
+  if [[ "$(loginctl show-user "$user" -p Linger --value)" == yes ]]; then
+    warn 'Disabling lingering may stop unrelated user services when you log out.'
+    if streaming_confirm 'Disable lingering for your account?'; then
+      sudo loginctl disable-linger "$user"
+      rm -f -- "$state_dir/linger-enabled"
+    fi
+  fi
+
+  # Keep any state files for cleanup that was declined/failed. User settings,
+  # identity, console password, paired clients and plugins remain untouched.
+  rmdir "$state_dir" 2>/dev/null || true
+  log 'Punktfunk removed; ~/.config/punktfunk has been preserved.'
+  warn 'Reboot after changing group membership or udev/device rules.'
 }
 
 show_streaming_status() {
@@ -524,7 +534,8 @@ show_streaming_status() {
   else
     printf 'Not installed\n'
   fi
-  log 'Punktfunk services'
+
+  log 'Punktfunk user services'
   local unit
   for unit in punktfunk-host punktfunk-web; do
     printf '%s: enabled=' "$unit"
@@ -532,14 +543,22 @@ show_streaming_status() {
     printf '   active='
     systemctl --user is-active "$unit.service" 2>/dev/null || true
   done
-  printf 'Lingering: '
+
+  log 'Punktfunk loginless streaming'
+  printf 'Door enabled: '
+  systemctl is-enabled punktfunk-door.service 2>/dev/null || true
+  printf 'Door active:  '
+  systemctl is-active punktfunk-door.service 2>/dev/null || true
+  printf 'Lingering:    '
   loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true
-  printf 'Update group: '
-  if streaming_group_member punktfunk-update; then
-    printf 'member\n'
-  else
-    printf 'not a member\n'
-  fi
+  for unit in input punktfunk punktfunk-update; do
+    printf 'Group %-16s: ' "$unit"
+    if streaming_group_member "$unit"; then
+      printf 'member\n'
+    else
+      printf 'not a member\n'
+    fi
+  done
 }
 
 show_status() {
@@ -572,7 +591,7 @@ case "${1:-all}" in
     setup_gnome
     setup_flatpaks
     setup_streaming
-    log 'Finished. Re-login if your Docker group membership changed.'
+    log 'Finished. Reboot if streaming or Docker group memberships changed.'
     ;;
   git) setup_git ;;
   docker) setup_docker ;;
