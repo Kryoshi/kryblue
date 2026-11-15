@@ -138,6 +138,31 @@ dnf5 -y copr remove codifryed/CoolerControl
 # dnf5 -y copr remove lizardbyte/stable
 
 # ============================================================
+# Punktfunk — Game streaming host
+# ============================================================
+
+# Install from the official signed Fedora 45 repository, then remove
+cat > /etc/yum.repos.d/punktfunk.repo <<'REPO'
+[punktfunk]
+name=Punktfunk
+baseurl=https://git.unom.io/api/packages/unom/rpm/fedora-45
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://git.unom.io/api/packages/unom/rpm/repository.key
+       https://git.unom.io/api/packages/unom/generic/punktfunk-keys/1/RPM-GPG-KEY-punktfunk
+REPO
+
+dnf5 install -y \
+  punktfunk \
+  punktfunk-web \
+  punktfunk-scripting \
+  punktfunk-gamescope
+
+# Remove Punktfunk repository from the final image
+rm -f /etc/yum.repos.d/punktfunk.repo
+
+# ============================================================
 # Remove unwanted base applications
 # ============================================================
 
