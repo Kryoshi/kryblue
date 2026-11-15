@@ -78,17 +78,23 @@ dnf5 install -y "${packages[@]}"
 # Shatter Shell (Pop Shell replacement)
 # ============================================================
 
-# Bootstrap the Terra repository and signing keys
-dnf5 install -y --nogpgcheck \
-  --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
-  terra-release terra-gpg-keys
+# Configure the official Terra repository with GPG verification
+cat > /etc/yum.repos.d/terra.repo <<'REPO'
+[terra]
+name=Terra $releasever
+baseurl=https://repos.fyralabs.com/terra$releasever
+enabled=0
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://repos.fyralabs.com/terra$releasever/key.asc
+REPO
 
-# Install Shatter Shell
+# Install Shatter Shell with package and repository signature checks
 dnf5 install -y --enablerepo=terra \
   gnome-shell-extension-shatter-shell
 
 # Remove Terra repository from the final image
-dnf5 remove -y terra-release
+rm -f /etc/yum.repos.d/terra.repo
 
 # ============================================================
 # Nerd Font — JetBrains Mono
