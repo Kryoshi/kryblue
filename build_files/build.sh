@@ -70,6 +70,9 @@ packages=(
   glx-utils
   lm_sensors
   fastfetch
+
+  # Networking
+  tailscale
 )
 
 dnf5 install -y "${packages[@]}"
@@ -201,3 +204,4 @@ fi
 
 systemctl enable docker.service
 systemctl enable coolercontrold.service
+systemctl enable tailscaled.service
